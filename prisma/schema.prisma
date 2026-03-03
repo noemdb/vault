@@ -1,0 +1,706 @@
+// prisma/schema.prisma
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  extensions = [pgvector(map: "vector"), pg_trgm]
+}
+
+// ─────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────
+
+enum UserRole {
+  admin
+  engineer    // Puede ejecutar evals y benchmarks
+  editor      // Puede crear y editar prompts
+  viewer
+}
+
+enum PromptStatus {
+  draft
+  active
+  deprecated
+  archived
+  featured
+}
+
+enum AIModel {
+  gpt_4o
+  gpt_4o_mini
+  gpt_4_turbo
+  claude_3_5_sonnet
+  claude_3_opus
+  claude_3_haiku
+  gemini_1_5_pro
+  gemini_1_5_flash
+  llama_3_70b
+  mistral_large
+  custom
+}
+
+enum AttachmentType {
+  image
+  pdf
+  html
+  markdown
+  text
+  json_output    // Resultado JSON de una evaluación
+  csv_dataset    // Dataset de testing
+}
+
+enum EvalStatus {
+  pending
+  running
+  completed
+  failed
+}
+
+enum OptimizationStatus {
+  pending
+  running
+  completed
+  failed
+  accepted    // El usuario aceptó la versión optimizada
+  rejected
+}
+
+enum JobStatus {
+  queued
+  running
+  completed
+  failed
+}
+
+// ─────────────────────────────────────────
+// USUARIOS Y ACCESO
+// ─────────────────────────────────────────
+
+model Role {
+  id    String   @id @default(cuid())
+  name  UserRole @unique
+  users User[]
+  @@map("roles")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  password_hash String
+  role_id       String
+  is_active     Boolean   @default(true)
+  last_login    DateTime?
+
+  role              Role               @relation(fields: [role_id], references: [id])
+  profile           Profile?
+  prompts           Prompt[]           @relation("PromptAuthor")
+  collections       Collection[]
+  ratings           Rating[]
+  comments          Comment[]
+  activity          UserActivity[]
+  access_grants     PromptAccess[]
+  eval_runs         EvalRun[]
+  benchmark_runs    BenchmarkRun[]
+  optimization_runs OptimizationRun[] @relation("OptimizationTriggered")
+  prompt_versions   PromptVersion[]
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([email])
+  @@index([role_id])
+  @@map("users")
+}
+
+model Profile {
+  id         String  @id @default(cuid())
+  user_id    String  @unique
+  full_name  String
+  username   String  @unique
+  department String?
+  avatar_url String?
+  bio        String?
+
+  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  updated_at DateTime @updatedAt
+  @@map("profiles")
+}
+
+// ─────────────────────────────────────────
+// TAXONOMÍA
+// ─────────────────────────────────────────
+
+model Category {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  slug        String  @unique
+  description String?
+  color       String  @default("#7c3aed")
+  icon        String?
+  parent_id   String?
+
+  parent   Category?  @relation("CategoryTree", fields: [parent_id], references: [id])
+  children Category[] @relation("CategoryTree")
+  prompts  Prompt[]
+
+  created_at DateTime @default(now())
+  @@map("categories")
+}
+
+model Tag {
+  id      String      @id @default(cuid())
+  name    String      @unique
+  slug    String      @unique
+  prompts PromptTag[]
+  @@map("tags")
+}
+
+// ─────────────────────────────────────────
+// PROMPTS — NÚCLEO
+// ─────────────────────────────────────────
+
+model Prompt {
+  id            String       @id @default(cuid())
+  title         String
+  slug          String       @unique
+  description   String?
+  content       String
+  system_prompt String?
+  status        PromptStatus @default(draft)
+  model         AIModel      @default(gpt_4o)
+  model_custom  String?
+  is_public     Boolean      @default(false)
+  is_template   Boolean      @default(false)
+
+  // Parámetros de modelo recomendados para este prompt
+  temperature   Float?       @default(0.7)
+  max_tokens    Int?
+  top_p         Float?
+
+  author_id     String
+  category_id   String?
+
+  // Linaje — referencia al prompt padre del que derivó
+  parent_id     String?
+  lineage_depth Int          @default(0)  // distancia desde el prompt raíz
+
+  author      User             @relation("PromptAuthor", fields: [author_id], references: [id])
+  category    Category?        @relation(fields: [category_id], references: [id])
+  parent      Prompt?          @relation("PromptLineage", fields: [parent_id], references: [id])
+  children    Prompt[]         @relation("PromptLineage")
+
+  tags             PromptTag[]
+  versions         PromptVersion[]
+  attachments      Attachment[]
+  ratings          Rating[]
+  comments         Comment[]
+  variables        PromptVariable[]
+  collections      CollectionPrompt[]
+  access           PromptAccess[]
+  metrics          PromptMetric?
+  embedding        PromptEmbedding?
+  eval_runs        EvalRun[]
+  benchmark_runs   BenchmarkRun[]
+  optimization_runs OptimizationRun[]
+  cluster_member   ClusterMember?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([author_id])
+  @@index([category_id])
+  @@index([status])
+  @@index([model])
+  @@index([parent_id])
+  @@map("prompts")
+}
+
+model PromptTag {
+  prompt_id String
+  tag_id    String
+
+  prompt Prompt @relation(fields: [prompt_id], references: [id], onDelete: Cascade)
+  tag    Tag    @relation(fields: [tag_id], references: [id], onDelete: Cascade)
+
+  @@id([prompt_id, tag_id])
+  @@map("prompt_tags")
+}
+
+model PromptVariable {
+  id          String  @id @default(cuid())
+  prompt_id   String
+  name        String
+  description String?
+  default_val String?
+  required    Boolean @default(true)
+  type        String  @default("string")  // string | number | boolean | enum
+
+  prompt Prompt @relation(fields: [prompt_id], references: [id], onDelete: Cascade)
+
+  @@index([prompt_id])
+  @@map("prompt_variables")
+}
+
+// ─────────────────────────────────────────
+// GIT-STYLE VERSIONING
+// ─────────────────────────────────────────
+
+model PromptVersion {
+  id            String  @id @default(cuid())
+  prompt_id     String
+  version       Int
+  sha           String  // Hash SHA-256 del content — identidad inmutable
+  content       String
+  system_prompt String?
+  change_note   String?
+  author_id     String
+
+  // Diff respecto a la versión anterior (almacenado como JSON de parches)
+  diff_patch    Json?
+
+  // Score de calidad en el momento de este commit
+  quality_score Float?
+
+  tags          PromptVersionTag[]
+  prompt        Prompt @relation(fields: [prompt_id], references: [id], onDelete: Cascade)
+  author        User   @relation(fields: [author_id], references: [id])
+
+  created_at DateTime @default(now())
+
+  @@unique([prompt_id, version])
+  @@unique([sha])
+  @@index([prompt_id])
+  @@map("prompt_versions")
+}
+
+// Tags de versión tipo Git — e.g. "v1.0", "stable", "production"
+model PromptVersionTag {
+  id         String        @id @default(cuid())
+  version_id String
+  label      String        // e.g. "v1.0", "stable", "best-eval"
+  created_by String
+  version    PromptVersion @relation(fields: [version_id], references: [id])
+
+  @@unique([version_id, label])
+  @@map("prompt_version_tags")
+}
+
+// ─────────────────────────────────────────
+// EMBEDDINGS Y BÚSQUEDA SEMÁNTICA
+// ─────────────────────────────────────────
+
+model PromptEmbedding {
+  id          String                 @id @default(cuid())
+  prompt_id   String                 @unique
+  model       String                 // e.g. "text-embedding-3-small"
+  vector      Unsupported("vector(1536)")  // pgvector
+  token_count Int?
+
+  prompt     Prompt   @relation(fields: [prompt_id], references: [id], onDelete: Cascade)
+  updated_at DateTime @updatedAt
+
+  @@map("prompt_embeddings")
+}
+
+// ─────────────────────────────────────────
+// CLUSTERING AUTOMÁTICO
+// ─────────────────────────────────────────
+
+model PromptCluster {
+  id              String  @id @default(cuid())
+  name            String?              // Generado automáticamente o por el admin
+  description     String?              // Resumen del cluster generado por IA
+  centroid        Unsupported("vector(1536)")
+  color           String  @default("#7c3aed")
+  member_count    Int     @default(0)
+  auto_label      String?              // Label generado por IA para el cluster
+
+  members    ClusterMember[]
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@map("prompt_clusters")
+}
+
+model ClusterMember {
+  id          String @id @default(cuid())
+  prompt_id   String @unique
+  cluster_id  String
+  distance    Float  // Distancia al centroide
+
+  prompt  Prompt        @relation(fields: [prompt_id], references: [id], onDelete: Cascade)
+  cluster PromptCluster @relation(fields: [cluster_id], references: [id])
+
+  assigned_at DateTime @default(now())
+
+  @@index([cluster_id])
+  @@map("cluster_members")
+}
+
+// ─────────────────────────────────────────
+// DATASETS DE EVALUACIÓN
+// ─────────────────────────────────────────
+
+model Dataset {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+  is_public   Boolean @default(false)
+  owner_id    String
+  schema      Json    // Definición de campos: input_vars, expected_output, criteria
+
+  cases      DatasetCase[]
+  eval_runs  EvalRun[]
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([owner_id])
+  @@map("datasets")
+}
+
+model DatasetCase {
+  id              String  @id @default(cuid())
+  dataset_id      String
+  input_variables Json    // { "nombre": "Ana", "tema": "contratos" }
+  expected_output String?
+  reference_score Float?  // Score humano de referencia (0–1)
+  metadata        Json?
+
+  dataset    Dataset         @relation(fields: [dataset_id], references: [id], onDelete: Cascade)
+  eval_cases EvalResultCase[]
+
+  @@index([dataset_id])
+  @@map("dataset_cases")
+}
+
+// ─────────────────────────────────────────
+// EVALUACIÓN AUTOMÁTICA
+// ─────────────────────────────────────────
+
+model EvalRun {
+  id          String     @id @default(cuid())
+  prompt_id   String
+  dataset_id  String
+  model       AIModel
+  status      EvalStatus @default(pending)
+  triggered_by String    // user_id
+
+  // Resultados agregados
+  total_cases    Int     @default(0)
+  passed_cases   Int     @default(0)
+  avg_score      Float?
+  avg_latency_ms Int?
+  total_tokens   Int?
+  total_cost_usd Float?
+
+  // Rubrica de evaluación usada
+  eval_criteria  Json   // { "relevance": 0.4, "accuracy": 0.4, "clarity": 0.2 }
+
+  error_message  String?
+  started_at     DateTime?
+  completed_at   DateTime?
+
+  prompt    Prompt        @relation(fields: [prompt_id], references: [id])
+  dataset   Dataset       @relation(fields: [dataset_id], references: [id])
+  triggered User          @relation(fields: [triggered_by], references: [id])
+  results   EvalResultCase[]
+  job       Job?
+
+  created_at DateTime @default(now())
+
+  @@index([prompt_id])
+  @@index([status])
+  @@map("eval_runs")
+}
+
+model EvalResultCase {
+  id              String  @id @default(cuid())
+  eval_run_id     String
+  dataset_case_id String
+  actual_output   String  // Output real del modelo
+  score           Float   // Score compuesto (0–1)
+  passed          Boolean
+
+  // Scores por criterio
+  criteria_scores Json    // { "relevance": 0.9, "accuracy": 0.7, "clarity": 0.8 }
+
+  // Justificación del score generada por el LLM juez
+  score_reasoning String?
+
+  latency_ms  Int?
+  tokens_used Int?
+  cost_usd    Float?
+
+  eval_run     EvalRun     @relation(fields: [eval_run_id], references: [id], onDelete: Cascade)
+  dataset_case DatasetCase @relation(fields: [dataset_case_id], references: [id])
+
+  @@index([eval_run_id])
+  @@map("eval_result_cases")
+}
+
+// ─────────────────────────────────────────
+// BENCHMARKING ENTRE MODELOS
+// ─────────────────────────────────────────
+
+model BenchmarkRun {
+  id           String     @id @default(cuid())
+  prompt_id    String
+  dataset_id   String?
+  models       AIModel[]  // Los modelos a comparar
+  status       EvalStatus @default(pending)
+  triggered_by String
+
+  // Winner declarado automáticamente
+  winner_model    AIModel?
+  winner_score    Float?
+  winner_reason   String?  // Generado por IA
+
+  started_at   DateTime?
+  completed_at DateTime?
+  error_message String?
+
+  prompt     Prompt           @relation(fields: [prompt_id], references: [id])
+  triggered  User             @relation(fields: [triggered_by], references: [id])
+  results    BenchmarkResult[]
+  job        Job?
+
+  created_at DateTime @default(now())
+
+  @@index([prompt_id])
+  @@map("benchmark_runs")
+}
+
+model BenchmarkResult {
+  id             String  @id @default(cuid())
+  benchmark_id   String
+  model          AIModel
+  avg_score      Float
+  avg_latency_ms Int
+  total_tokens   Int
+  cost_usd       Float
+  scores_detail  Json    // Scores por criterio y por case
+
+  benchmark BenchmarkRun @relation(fields: [benchmark_id], references: [id], onDelete: Cascade)
+
+  @@index([benchmark_id])
+  @@map("benchmark_results")
+}
+
+// ─────────────────────────────────────────
+// AUTO-OPTIMIZACIÓN
+// ─────────────────────────────────────────
+
+model OptimizationRun {
+  id             String             @id @default(cuid())
+  prompt_id      String
+  dataset_id     String?
+  status         OptimizationStatus @default(pending)
+  triggered_by   String
+
+  // Prompt original en el momento de la optimización
+  original_content  String
+  original_score    Float?
+
+  // Versiones candidatas generadas por IA
+  candidates        Json    // Array de { content, score, reasoning }
+
+  // Versión ganadora seleccionada
+  best_content      String?
+  best_score        Float?
+  improvement_delta Float?  // best_score - original_score
+
+  // Estrategia usada
+  strategy          String  @default("iterative")
+
+  optimization_notes String?  // Explicación de los cambios sugeridos por IA
+
+  accepted_by    String?  // user_id que aceptó o rechazó
+  accepted_at    DateTime?
+
+  started_at     DateTime?
+  completed_at   DateTime?
+  error_message  String?
+
+  prompt    Prompt @relation(fields: [prompt_id], references: [id])
+  triggered User   @relation("OptimizationTriggered", fields: [triggered_by], references: [id])
+  job       Job?
+
+  created_at DateTime @default(now())
+
+  @@index([prompt_id])
+  @@index([status])
+  @@map("optimization_runs")
+}
+
+// ─────────────────────────────────────────
+// SISTEMA DE JOBS ASINCRÓNICOS
+// ─────────────────────────────────────────
+
+model Job {
+  id              String    @id @default(cuid())
+  type            String    // "eval_run" | "benchmark_run" | "optimization_run" | "embed_prompt" | "cluster_prompts"
+  status          JobStatus @default(queued)
+  entity_id       String?   // Para tracking genérico (opcional)
+  entity_type     String?
+
+  payload         Json      // Datos necesarios para ejecutar el job
+  result          Json?     // Resultado del job
+  error           String?
+  attempts        Int       @default(0)
+  max_attempts    Int       @default(3)
+
+  eval_run_id     String?   @unique
+  eval_run        EvalRun?  @relation(fields: [eval_run_id], references: [id])
+
+  benchmark_run_id String?  @unique
+  benchmark_run   BenchmarkRun? @relation(fields: [benchmark_run_id], references: [id])
+
+  optimization_id String?   @unique
+  optimization    OptimizationRun? @relation(fields: [optimization_id], references: [id])
+
+  queued_at     DateTime  @default(now())
+  started_at    DateTime?
+  completed_at  DateTime?
+
+  @@index([status])
+  @@index([type])
+  @@map("jobs")
+}
+
+// ─────────────────────────────────────────
+// MÉTRICAS, COLECCIONES, RESTO DEL SISTEMA
+// ─────────────────────────────────────────
+
+model PromptMetric {
+  id            String @id @default(cuid())
+  prompt_id     String @unique
+  view_count    Int    @default(0)
+  copy_count    Int    @default(0)
+  use_count     Int    @default(0)
+  avg_rating    Float  @default(0)
+  rating_count  Int    @default(0)
+  avg_eval_score Float? // Promedio de todos los EvalRuns completados
+  best_eval_score Float?
+  last_eval_at  DateTime?
+
+  prompt     Prompt   @relation(fields: [prompt_id], references: [id], onDelete: Cascade)
+  updated_at DateTime @updatedAt
+
+  @@map("prompt_metrics")
+}
+
+model Attachment {
+  id            String         @id @default(cuid())
+  prompt_id     String
+  type          AttachmentType
+  title         String?
+  description   String?
+  url           String
+  cloudinary_id String?
+  file_size     Int?
+  mime_type     String?
+  is_cover      Boolean        @default(false)
+  order         Int            @default(0)
+
+  prompt     Prompt   @relation(fields: [prompt_id], references: [id], onDelete: Cascade)
+  created_at DateTime @default(now())
+
+  @@index([prompt_id])
+  @@map("attachments")
+}
+
+model Rating {
+  id        String  @id @default(cuid())
+  prompt_id String
+  user_id   String
+  score     Int
+  comment   String?
+
+  prompt     Prompt   @relation(fields: [prompt_id], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [user_id], references: [id])
+  created_at DateTime @default(now())
+
+  @@unique([prompt_id, user_id])
+  @@map("ratings")
+}
+
+model Comment {
+  id        String  @id @default(cuid())
+  prompt_id String
+  user_id   String
+  content   String
+  parent_id String?
+
+  parent   Comment?  @relation("CommentThread", fields: [parent_id], references: [id])
+  replies  Comment[] @relation("CommentThread")
+  prompt   Prompt    @relation(fields: [prompt_id], references: [id], onDelete: Cascade)
+  user     User      @relation(fields: [user_id], references: [id])
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([prompt_id])
+  @@map("comments")
+}
+
+model Collection {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+  is_public   Boolean @default(false)
+  owner_id    String
+  color       String  @default("#7c3aed")
+
+  owner   User               @relation(fields: [owner_id], references: [id])
+  prompts CollectionPrompt[]
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@map("collections")
+}
+
+model CollectionPrompt {
+  collection_id String
+  prompt_id     String
+  order         Int      @default(0)
+  added_at      DateTime @default(now())
+
+  collection Collection @relation(fields: [collection_id], references: [id], onDelete: Cascade)
+  prompt     Prompt     @relation(fields: [prompt_id], references: [id], onDelete: Cascade)
+
+  @@id([collection_id, prompt_id])
+  @@map("collection_prompts")
+}
+
+model PromptAccess {
+  id        String  @id @default(cuid())
+  prompt_id String
+  user_id   String
+  can_edit  Boolean @default(false)
+
+  prompt Prompt @relation(fields: [prompt_id], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([prompt_id, user_id])
+  @@map("prompt_access")
+}
+
+model UserActivity {
+  id        String   @id @default(cuid())
+  user_id   String
+  action    String   // e.g. "created_prompt", "run_eval"
+  entity_id String?
+  details   Json?
+
+  user      User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  created_at DateTime @default(now())
+
+  @@index([user_id])
+  @@map("user_activity")
+}
