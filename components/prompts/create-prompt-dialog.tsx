@@ -31,7 +31,7 @@ import {
   SelectValue 
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
-import { AIModel } from "@prisma/client";
+import { AIModel } from "@/types/prisma";
 import { Plus, Loader2 } from "lucide-react";
 import { createPromptAction } from "@/lib/actions/prompts";
 import { useRouter } from "next/navigation";

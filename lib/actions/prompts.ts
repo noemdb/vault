@@ -1,7 +1,8 @@
 "use server";
 
 import { auth } from "@/auth";
-import { PrismaClient, AIModel, PromptStatus } from "@prisma/client";
+import { AIModel, PromptStatus, SharedPrompt } from "@/types/prisma";
+import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
 import { revalidatePath } from "next/cache";
@@ -70,7 +71,7 @@ export async function getPromptsAction(filters?: {
   searchTerm?: string;
   category?: string;
   status?: PromptStatus;
-}) {
+}): Promise<SharedPrompt[]> {
   const where: import("@prisma/client").Prisma.PromptWhereInput = {};
 
   if (filters?.searchTerm) {
@@ -99,7 +100,7 @@ export async function getPromptsAction(filters?: {
       _count: { select: { versions: true } }
     },
     orderBy: { updated_at: "desc" },
-  });
+  }) as unknown as SharedPrompt[];
 }
 
 export async function getPromptBySlugAction(slug: string) {

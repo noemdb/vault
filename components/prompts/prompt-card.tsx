@@ -4,31 +4,11 @@ import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/componen
 import { Badge } from "@/components/ui/badge";
 import { User, ChevronRight, Star } from "lucide-react";
 import Link from "next/link";
-import { PromptStatus, AIModel } from "@prisma/client";
+import { PromptStatus, AIModel, SharedPrompt } from "@/types/prisma";
 import { cn } from "@/lib/utils";
 
 interface PromptCardProps {
-  prompt: {
-    id: string;
-    title: string;
-    slug: string;
-    description: string | null;
-    status: PromptStatus;
-    model: AIModel;
-    author: {
-      email: string;
-      profile?: {
-        full_name: string;
-        username: string;
-      } | null;
-    };
-    category?: {
-      name: string;
-    } | null;
-    _count: {
-      versions: number;
-    };
-  };
+  prompt: SharedPrompt;
 }
 
 const statusColors: Record<PromptStatus, string> = {
