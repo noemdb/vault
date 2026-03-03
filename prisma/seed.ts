@@ -1,5 +1,6 @@
 // prisma/seed.ts
-import { PrismaClient, UserRole } from "@prisma/client";
+import { UserRole } from "../types/prisma";
+import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import pg from "pg";
 import bcrypt from "bcryptjs";
